@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ollama本地流式翻译器
 // @namespace    https://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  通过本地 Ollama 对网页进行就地翻译。
 // @author       hex0x13h
 // @match        *://*/*
@@ -29,6 +29,7 @@
     apiUrl: GM_getValue('apiUrl', 'http://127.0.0.1:11434/api/generate'), // 建议用 127.0.0.1 更稳
     model: GM_getValue('model', 'zongwei/gemma3-translator:4b'),
     targetLang: GM_getValue('targetLang', 'Chinese (Simplified)'),
+    prompt: GM_getValue('prompt', '请将以下文本翻译成{targetLang}，保持原文的格式和语气：\n\n{text}'),
     maxChunk: GM_getValue('maxChunk', 600),     // 每段最大字符数（太大影响速度）
     minLen: GM_getValue('minLen', 6),           // 短文本不翻
     concurrency: GM_getValue('concurrency', 2), // 同时翻译多少段
@@ -133,6 +134,25 @@
   }
 
   .oltx-row input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  }
+
+  .oltx-row textarea {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #ffffff;
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 60px;
+    transition: all 0.2s ease;
+  }
+
+  .oltx-row textarea:focus {
     outline: none;
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
@@ -507,6 +527,10 @@
         <div class="oltx-row"><label>API 地址</label><input id="oltx-api" value="${escapeHtml(CFG.apiUrl)}" placeholder="http://127.0.0.1:11434/api/generate"></div>
         <div class="oltx-row"><label>模型名</label><input id="oltx-model" value="${escapeHtml(CFG.model)}" placeholder="mannix/llama3.1-8b"></div>
         <div class="oltx-row"><label>目标语言</label><input id="oltx-lang" value="${escapeHtml(CFG.targetLang)}" placeholder="Chinese (Simplified) / Arabic / Russian"></div>
+        <div class="oltx-row"><label>提示词模板</label><textarea id="oltx-prompt" rows="3" placeholder="请将以下文本翻译成{targetLang}，保持原文的格式和语气：\n\n{text}">${escapeHtml(CFG.prompt)}</textarea></div>
+        <div style="font-size: 11px; color: #6b7280; margin: -8px 0 8px 100px;">
+          占位符: {targetLang} = 目标语言, {text} = 待翻译文本
+        </div>
         <div class="oltx-row"><label>段最大长度</label><input id="oltx-max" type="number" min="100" max="4000" value="${CFG.maxChunk}"></div>
         <div class="oltx-row"><label>最小长度</label><input id="oltx-min" type="number" min="0" max="200" value="${CFG.minLen}"></div>
         <div class="oltx-row"><label>并发数</label><input id="oltx-conc" type="number" min="1" max="6" value="${CFG.concurrency}"></div>
@@ -768,6 +792,7 @@
     CFG.apiUrl = $('#oltx-api').value.trim();
     CFG.model = $('#oltx-model').value.trim();
     CFG.targetLang = $('#oltx-lang').value.trim();
+    CFG.prompt = $('#oltx-prompt').value.trim();
     CFG.maxChunk = parseInt($('#oltx-max').value, 10) || 600;
     CFG.minLen = parseInt($('#oltx-min').value, 10) || 6;
     CFG.concurrency = Math.max(1, Math.min(6, parseInt($('#oltx-conc').value, 10) || 2));
@@ -776,6 +801,7 @@
     GM_setValue('apiUrl', CFG.apiUrl);
     GM_setValue('model', CFG.model);
     GM_setValue('targetLang', CFG.targetLang);
+    GM_setValue('prompt', CFG.prompt);
     GM_setValue('maxChunk', CFG.maxChunk);
     GM_setValue('minLen', CFG.minLen);
     GM_setValue('concurrency', CFG.concurrency);
@@ -905,7 +931,10 @@
     if (!parent) return; // 保险
     parent.replaceChild(span, textNode);
 
-    const prompt = `Translate to ${CFG.targetLang}: "${text}"`;
+    // 使用自定义提示词模板，支持 {targetLang} 和 {text} 占位符
+    const prompt = CFG.prompt
+      .replace(/{targetLang}/g, CFG.targetLang)
+      .replace(/{text}/g, text);
 
     const req = streamGenerate({
       url: CFG.apiUrl,
@@ -993,11 +1022,16 @@
     saveCfg();
     stat('测试API连接中...');
 
+    // 使用自定义提示词模板进行测试
+    const testPrompt = CFG.prompt
+      .replace(/{targetLang}/g, CFG.targetLang)
+      .replace(/{text}/g, 'Hello world');
+
     const testReq = streamGenerate({
       url: CFG.apiUrl,
       body: {
         model: CFG.model,
-        prompt: 'Translate "Hello world" to Chinese',
+        prompt: testPrompt,
         stream: true,
         options: { temperature: 0 }
       },
@@ -1094,12 +1128,16 @@
     const shortText = testText.substring(0, 100);
     console.log('快速测试文本:', shortText);
 
-    // 先测试简单的文本
+    // 使用自定义提示词模板进行快速测试
+    const testPrompt = CFG.prompt
+      .replace(/{targetLang}/g, CFG.targetLang)
+      .replace(/{text}/g, shortText);
+
     const testReq = streamGenerate({
       url: CFG.apiUrl,
       body: {
         model: CFG.model,
-        prompt: `Translate to ${CFG.targetLang}: "Hello world"`,
+        prompt: testPrompt,
         stream: true,
         options: { temperature: 0 }
       },
@@ -1166,6 +1204,7 @@
           <h3>快速翻译测试</h3>
           <p><strong>原文:</strong> ${shortText}</p>
           <p><strong>翻译:</strong> ${finalText}</p>
+          <p><strong>提示词:</strong> ${testPrompt.substring(0, 100)}...</p>
           <button onclick="this.parentElement.remove()" style="background:#fff;color:#333;border:none;padding:5px 10px;border-radius:5px;cursor:pointer">关闭</button>
         `;
         document.body.appendChild(testDiv);
