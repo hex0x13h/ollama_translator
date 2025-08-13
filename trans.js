@@ -2,7 +2,7 @@
 // @name         Ollama本地流式翻译器
 // @namespace    https://tampermonkey.net/
 // @version      1.1
-// @description  通过本地 Ollama 对网页进行就地翻译；逐段翻译并实时替换，提供面板设置模型/目标语言/并发等参数，类似谷歌翻译的逐段出现效果。
+// @description  通过本地 Ollama 对网页进行就地翻译。
 // @author       hex0x13h
 // @match        *://*/*
 // @grant        GM_addStyle
@@ -25,11 +25,17 @@
     minLen: GM_getValue('minLen', 6),           // 短文本不翻
     concurrency: GM_getValue('concurrency', 2), // 同时翻译多少段
     temperature: GM_getValue('temperature', 0),
+    // 面板位置和状态
+    panelLeft: GM_getValue('panelLeft', 20),
+    panelTop: GM_getValue('panelTop', 20),
+    panelMinimized: GM_getValue('panelMinimized', false),
+    // 自动翻译设置
+    autoTranslate: GM_getValue('autoTranslate', false), // 是否自动开始翻译
   };
 
   // ----------- 样式/UI -----------
   GM_addStyle(`
-  #oltx-panel{position:fixed;left:20px;top:20px;z-index:2147483647;width:380px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.18);font:13px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial}
+  #oltx-panel{position:fixed;z-index:2147483647;width:380px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.18);font:13px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial}
   #oltx-head{cursor:move;padding:10px 12px;border-bottom:1px solid #eee;background:#111;color:#fff;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center}
   #oltx-title{font-weight:600}
   #oltx-body{padding:10px 12px}
@@ -45,6 +51,18 @@
   .oltx-badge{display:inline-block;background:#eef;border:1px solid #ccd;padding:2px 6px;border-radius:8px;margin-left:6px;color:#334}
   #oltx-panel.minimized #oltx-body{display:none}
   #oltx-panel.minimized{width:auto;min-width:200px}
+  /* 复选框样式 */
+  .oltx-checkbox{display:flex;align-items:center;gap:8px;margin:8px 0}
+  .oltx-checkbox input[type="checkbox"]{width:16px;height:16px;cursor:pointer}
+  .oltx-checkbox label{cursor:pointer;user-select:none}
+  /* 按钮组样式 */
+  .oltx-actions-basic, .oltx-actions-advanced{margin:8px 0}
+  .oltx-actions-basic button, .oltx-actions-advanced button{margin:2px;padding:6px 12px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer;font-size:12px}
+  .oltx-actions-basic button:hover, .oltx-actions-advanced button:hover{background:#f0f0f0}
+  .oltx-actions-basic button.primary{background:#007bff;color:#fff;border-color:#007bff}
+  .oltx-actions-basic button.primary:hover{background:#0056b3}
+  .oltx-actions-basic button.secondary, .oltx-actions-advanced button.secondary{background:#6c757d;color:#fff;border-color:#6c757d}
+  .oltx-actions-basic button.secondary:hover, .oltx-actions-advanced button.secondary:hover{background:#545b62}
   /* 新增：我们包裹的 span 的状态标记（可视化） */
   .oltx-span[data-state="translating"]{padding:1px 2px;}
   .oltx-span[data-state="translated"]{padding:1px 2px;}
@@ -67,23 +85,41 @@
       </div>
     </div>
     <div id="oltx-body">
-      <div class="oltx-row"><label>API 地址</label><input id="oltx-api" value="${escapeHtml(CFG.apiUrl)}" placeholder="http://127.0.0.1:11434/api/generate"></div>
-      <div class="oltx-row"><label>模型名</label><input id="oltx-model" value="${escapeHtml(CFG.model)}" placeholder="mannix/llama3.1-8b"></div>
-      <div class="oltx-row"><label>目标语言</label><input id="oltx-lang" value="${escapeHtml(CFG.targetLang)}" placeholder="Chinese (Simplified) / Arabic / Russian"></div>
-      <div class="oltx-row"><label>段最大长度</label><input id="oltx-max" type="number" min="100" max="4000" value="${CFG.maxChunk}"></div>
-      <div class="oltx-row"><label>最小长度</label><input id="oltx-min" type="number" min="0" max="200" value="${CFG.minLen}"></div>
-      <div class="oltx-row"><label>并发数</label><input id="oltx-conc" type="number" min="1" max="6" value="${CFG.concurrency}"></div>
-      <div class="oltx-row"><label>temperature</label><input id="oltx-temp" type="number" min="0" max="1" step="0.1" value="${CFG.temperature}"></div>
+      <!-- 基本配置项（默认显示） -->
+      <div class="oltx-config-basic">
+        <div class="oltx-checkbox">
+          <input type="checkbox" id="oltx-auto" ${CFG.autoTranslate ? 'checked' : ''}>
+          <label for="oltx-auto">总是翻译（页面加载后自动开始）</label>
+        </div>
+      </div>
 
-      <div class="oltx-actions">
+      <!-- 高级配置项（默认隐藏） -->
+      <div class="oltx-config-advanced" style="display: none;">
+        <div class="oltx-row"><label>API 地址</label><input id="oltx-api" value="${escapeHtml(CFG.apiUrl)}" placeholder="http://127.0.0.1:11434/api/generate"></div>
+        <div class="oltx-row"><label>模型名</label><input id="oltx-model" value="${escapeHtml(CFG.model)}" placeholder="mannix/llama3.1-8b"></div>
+        <div class="oltx-row"><label>目标语言</label><input id="oltx-lang" value="${escapeHtml(CFG.targetLang)}" placeholder="Chinese (Simplified) / Arabic / Russian"></div>
+        <div class="oltx-row"><label>段最大长度</label><input id="oltx-max" type="number" min="100" max="4000" value="${CFG.maxChunk}"></div>
+        <div class="oltx-row"><label>最小长度</label><input id="oltx-min" type="number" min="0" max="200" value="${CFG.minLen}"></div>
+        <div class="oltx-row"><label>并发数</label><input id="oltx-conc" type="number" min="1" max="6" value="${CFG.concurrency}"></div>
+        <div class="oltx-row"><label>temperature</label><input id="oltx-temp" type="number" min="0" max="1" step="0.1" value="${CFG.temperature}"></div>
+      </div>
+
+      <!-- 基本功能按钮 -->
+      <div class="oltx-actions-basic">
         <button id="oltx-start" class="primary">开始整页翻译</button>
         <button id="oltx-stop">停止</button>
+        <button id="oltx-show-more" class="secondary">显示更多</button>
+      </div>
+
+      <!-- 高级功能按钮（默认隐藏） -->
+      <div class="oltx-actions-advanced" style="display: none;">
         <button id="oltx-refresh">重新扫描</button>
         <button id="oltx-force-refresh">强制刷新</button>
         <button id="oltx-save">保存设置</button>
         <button id="oltx-debug">调试模式</button>
         <button id="oltx-test">测试API</button>
         <button id="oltx-quick-test">快速测试</button>
+        <button id="oltx-show-less" class="secondary">显示更少</button>
       </div>
 
       <div id="oltx-bar"><div></div></div>
@@ -91,13 +127,53 @@
       <div id="oltx-tip">说明：将逐段替换页面上的可见文本，翻译时会实时出现文字。</div>
     </div>
   `;
+  
+  // 设置面板位置
+  panel.style.left = CFG.panelLeft + 'px';
+  panel.style.top = CFG.panelTop + 'px';
+  
+  // 恢复最小化状态
+  if (CFG.panelMinimized) {
+    panel.classList.add('minimized');
+  }
+  
   document.documentElement.appendChild(panel);
+  
+  // 调试信息
+  console.log('面板已添加到页面');
+  console.log('面板元素:', panel);
+  console.log('面板可见性:', panel.offsetParent !== null);
+  
+  // 强制确保面板可见
+  panel.style.display = 'block';
+  panel.style.visibility = 'visible';
+  panel.style.opacity = '1';
+  console.log('面板样式:', {
+    display: panel.style.display,
+    visibility: panel.style.visibility,
+    opacity: panel.style.opacity,
+    zIndex: panel.style.zIndex,
+    position: panel.style.position
+  });
+  
+  // 在面板添加到DOM后设置按钮文本
+  if (CFG.panelMinimized) {
+    $('#oltx-minimize').textContent = '□';
+  }
 
+  // 增强的拖拽功能，保存位置
   dragEnable($('#oltx-head'), panel);
+  
+  // 增强的最小化功能，保存状态
   $('#oltx-minimize').onclick = () => {
     panel.classList.toggle('minimized');
     const btn = $('#oltx-minimize');
-    btn.textContent = panel.classList.contains('minimized') ? '□' : '−';
+    const isMinimized = panel.classList.contains('minimized');
+    btn.textContent = isMinimized ? '□' : '−';
+    
+    // 保存最小化状态
+    CFG.panelMinimized = isMinimized;
+    GM_setValue('panelMinimized', isMinimized);
   };
   $('#oltx-hide').onclick = () => panel.remove();
   $('#oltx-save').onclick = saveCfg;
@@ -108,21 +184,44 @@
   $('#oltx-debug').onclick = toggleDebug;
   $('#oltx-test').onclick = testAPI;
   $('#oltx-quick-test').onclick = quickTest;
+  
+  // 自动翻译复选框事件处理
+  $('#oltx-auto').onchange = () => {
+    CFG.autoTranslate = $('#oltx-auto').checked;
+    GM_setValue('autoTranslate', CFG.autoTranslate);
+    console.log('自动翻译设置已更新:', CFG.autoTranslate);
+    stat(CFG.autoTranslate ? '已启用自动翻译' : '已禁用自动翻译');
+  };
+
+  // 显示更多/更少功能
+  $('#oltx-show-more').onclick = () => {
+    $('.oltx-config-basic').style.display = 'none';
+    $('.oltx-config-advanced').style.display = 'block';
+    $('.oltx-actions-basic').style.display = 'none';
+    $('.oltx-actions-advanced').style.display = 'block';
+  };
+  
+  $('#oltx-show-less').onclick = () => {
+    $('.oltx-config-basic').style.display = 'block';
+    $('.oltx-config-advanced').style.display = 'none';
+    $('.oltx-actions-basic').style.display = 'block';
+    $('.oltx-actions-advanced').style.display = 'none';
+  };
 
   // 添加强制重新加载脚本按钮
   const reloadBtn = document.createElement('button');
   reloadBtn.textContent = '重新加载脚本';
-  reloadBtn.style.cssText = 'margin-left: 8px; padding: 8px; border-radius: 10px; border: 1px solid #ddd; background: #f7f7f7; cursor: pointer';
+  reloadBtn.style.cssText = 'margin: 2px; padding: 6px 12px; border-radius: 6px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 12px';
   reloadBtn.onclick = () => {
     console.log('重新加载脚本...');
     location.reload();
   };
-  document.querySelector('.oltx-actions').appendChild(reloadBtn);
+  document.querySelector('.oltx-actions-advanced').appendChild(reloadBtn);
 
   // 添加一个简单的测试按钮
   const simpleTestBtn = document.createElement('button');
   simpleTestBtn.textContent = '简单测试';
-  simpleTestBtn.style.cssText = 'margin-left: 8px; padding: 8px; border-radius: 10px; border: 1px solid #ddd; background: #f7f7f7; cursor: pointer';
+  simpleTestBtn.style.cssText = 'margin: 2px; padding: 6px 12px; border-radius: 6px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 12px';
   simpleTestBtn.onclick = () => {
     console.log('开始简单测试...');
     console.log('当前配置:', CFG);
@@ -158,7 +257,7 @@
       }
     });
   };
-  document.querySelector('.oltx-actions').appendChild(simpleTestBtn);
+  document.querySelector('.oltx-actions-advanced').appendChild(simpleTestBtn);
 
   function saveCfg() {
     CFG.apiUrl = $('#oltx-api').value.trim();
@@ -168,6 +267,7 @@
     CFG.minLen = parseInt($('#oltx-min').value, 10) || 6;
     CFG.concurrency = Math.max(1, Math.min(6, parseInt($('#oltx-conc').value, 10) || 2));
     CFG.temperature = Number($('#oltx-temp').value) || 0;
+    CFG.autoTranslate = $('#oltx-auto').checked;
     GM_setValue('apiUrl', CFG.apiUrl);
     GM_setValue('model', CFG.model);
     GM_setValue('targetLang', CFG.targetLang);
@@ -175,6 +275,7 @@
     GM_setValue('minLen', CFG.minLen);
     GM_setValue('concurrency', CFG.concurrency);
     GM_setValue('temperature', CFG.temperature);
+    GM_setValue('autoTranslate', CFG.autoTranslate);
     stat('设置已保存');
   }
 
@@ -887,8 +988,50 @@
   // ----------- 工具 -----------
   function dragEnable(handle, box){
     let sx=0, sy=0, ox=0, oy=0, dragging=false;
-    handle.addEventListener('mousedown', (e)=>{ dragging=true; sx=e.clientX; sy=e.clientY; const r=box.getBoundingClientRect(); ox=r.left; oy=r.top; e.preventDefault(); });
-    window.addEventListener('mousemove', (e)=>{ if(!dragging) return; box.style.left=(ox+e.clientX-sx)+'px'; box.style.top=(oy+e.clientY-sy)+'px'; });
-    window.addEventListener('mouseup', ()=> dragging=false);
+    handle.addEventListener('mousedown', (e)=>{ 
+      dragging=true; 
+      sx=e.clientX; 
+      sy=e.clientY; 
+      const r=box.getBoundingClientRect(); 
+      ox=r.left; 
+      oy=r.top; 
+      e.preventDefault(); 
+    });
+    window.addEventListener('mousemove', (e)=>{ 
+      if(!dragging) return; 
+      box.style.left=(ox+e.clientX-sx)+'px'; 
+      box.style.top=(oy+e.clientY-sy)+'px'; 
+    });
+    window.addEventListener('mouseup', ()=> { 
+      if(dragging) {
+        dragging=false;
+        // 保存面板位置
+        const rect = box.getBoundingClientRect();
+        CFG.panelLeft = Math.round(rect.left);
+        CFG.panelTop = Math.round(rect.top);
+        GM_setValue('panelLeft', CFG.panelLeft);
+        GM_setValue('panelTop', CFG.panelTop);
+      }
+    });
+  }
+
+  // ----------- 自动翻译逻辑 -----------
+  // 如果启用了自动翻译，等待页面加载完成后自动开始翻译
+  if (CFG.autoTranslate) {
+    // 等待页面完全加载
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => {
+        setTimeout(() => {
+          console.log('自动翻译：页面加载完成，开始翻译');
+          startTranslate();
+        }, 1000); // 延迟1秒确保页面完全渲染
+      });
+    } else {
+      // 页面已经加载完成
+      setTimeout(() => {
+        console.log('自动翻译：页面已加载，开始翻译');
+        startTranslate();
+      }, 1000);
+    }
   }
 })();
