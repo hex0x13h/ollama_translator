@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ollama本地流式翻译器
 // @namespace    https://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  通过本地 Ollama 对网页进行就地翻译。
 // @author       hex0x13h
 // @match        *://*/*
@@ -15,6 +15,14 @@
 
 (function () {
   'use strict';
+
+  // 添加Font Awesome CDN
+  if (!document.querySelector('link[href*="font-awesome"]')) {
+    const fontAwesomeLink = document.createElement('link');
+    fontAwesomeLink.rel = 'stylesheet';
+    fontAwesomeLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css';
+    document.head.appendChild(fontAwesomeLink);
+  }
 
   // ----------- 默认/持久化配置 -----------
   const CFG = {
@@ -35,38 +43,443 @@
 
   // ----------- 样式/UI -----------
   GM_addStyle(`
-  #oltx-panel{position:fixed;z-index:2147483647;width:380px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.18);font:13px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial}
-  #oltx-head{cursor:move;padding:10px 12px;border-bottom:1px solid #eee;background:#111;color:#fff;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center}
-  #oltx-title{font-weight:600}
-  #oltx-body{padding:10px 12px}
-  .oltx-row{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:center;margin:6px 0}
-  .oltx-row input{width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:8px}
-  .oltx-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
-  .oltx-actions button{flex:1 1 auto;padding:8px;border-radius:10px;border:1px solid #ddd;background:#f7f7f7;cursor:pointer}
-  .oltx-actions button.primary{background:#0f172a;color:#fff;border-color:#0f172a}
-  #oltx-bar{height:6px;background:#eee;border-radius:6px;overflow:hidden;margin-top:6px}
-  #oltx-bar>div{height:100%;width:0;background:#16a34a;transition:width .2s}
-  #oltx-stat{color:#444;margin-top:6px}
-  #oltx-tip{color:#666;font-size:12px;margin-top:4px}
-  .oltx-badge{display:inline-block;background:#eef;border:1px solid #ccd;padding:2px 6px;border-radius:8px;margin-left:6px;color:#334}
-  #oltx-panel.minimized #oltx-body{display:none}
-  #oltx-panel.minimized{width:auto;min-width:200px}
-  /* 复选框样式 */
-  .oltx-checkbox{display:flex;align-items:center;gap:8px;margin:8px 0}
-  .oltx-checkbox input[type="checkbox"]{width:16px;height:16px;cursor:pointer}
-  .oltx-checkbox label{cursor:pointer;user-select:none}
-  /* 按钮组样式 */
-  .oltx-actions-basic, .oltx-actions-advanced{margin:8px 0}
-  .oltx-actions-basic button, .oltx-actions-advanced button{margin:2px;padding:6px 12px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer;font-size:12px}
-  .oltx-actions-basic button:hover, .oltx-actions-advanced button:hover{background:#f0f0f0}
-  .oltx-actions-basic button.primary{background:#007bff;color:#fff;border-color:#007bff}
-  .oltx-actions-basic button.primary:hover{background:#0056b3}
-  .oltx-actions-basic button.secondary, .oltx-actions-advanced button.secondary{background:#6c757d;color:#fff;border-color:#6c757d}
-  .oltx-actions-basic button.secondary:hover, .oltx-actions-advanced button.secondary:hover{background:#545b62}
-  /* 新增：我们包裹的 span 的状态标记（可视化） */
-  .oltx-span[data-state="translating"]{padding:1px 2px;}
-  .oltx-span[data-state="translated"]{padding:1px 2px;}
-  .oltx-span[data-state="error"]{padding:1px 2px;}
+  /* 主面板 */
+  #oltx-panel {
+    position: fixed;
+    z-index: 2147483647;
+    width: 380px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    transition: all 0.2s ease;
+  }
+
+  /* 头部 */
+  #oltx-head {
+    cursor: move;
+    padding: 16px 20px;
+    background: #f8fafc;
+    border-bottom: 1px solid #e5e7eb;
+    border-radius: 12px 12px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  #oltx-title {
+    font-weight: 600;
+    font-size: 15px;
+    color: #1f2937;
+  }
+
+  /* 头部按钮 */
+  #oltx-minimize, #oltx-hide {
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: #e5e7eb;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: #6b7280;
+    transition: all 0.2s ease;
+  }
+
+  #oltx-minimize:hover, #oltx-hide:hover {
+    background: #d1d5db;
+    color: #374151;
+  }
+
+  /* 主体内容 */
+  #oltx-body {
+    padding: 20px;
+    min-height: 280px;
+    max-height: 400px;
+    overflow-y: auto;
+    background: #ffffff;
+    border-radius: 0 0 12px 12px;
+  }
+
+  /* 表单行 */
+  .oltx-row {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 12px;
+    align-items: center;
+    margin: 12px 0;
+  }
+
+  .oltx-row label {
+    font-weight: 500;
+    color: #374151;
+    font-size: 13px;
+  }
+
+  .oltx-row input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #ffffff;
+    font-size: 13px;
+    transition: all 0.2s ease;
+  }
+
+  .oltx-row input:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  }
+
+  /* 按钮组 */
+  .oltx-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 16px 0;
+  }
+
+  .oltx-actions button {
+    flex: 1 1 auto;
+    padding: 8px 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #374151;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+  }
+
+  .oltx-actions button:hover {
+    background: #f9fafb;
+    border-color: #9ca3af;
+  }
+
+  .oltx-actions button.primary {
+    background: #3b82f6;
+    color: #ffffff;
+    border-color: #3b82f6;
+  }
+
+  .oltx-actions button.primary:hover {
+    background: #2563eb;
+    border-color: #2563eb;
+  }
+
+  /* 进度条 */
+  #oltx-bar {
+    height: 4px;
+    background: #f3f4f6;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 12px;
+  }
+
+  #oltx-bar > div {
+    height: 100%;
+    width: 0;
+    background: #3b82f6;
+    transition: width 0.3s ease;
+    border-radius: 2px;
+  }
+
+  /* 状态文本 */
+  #oltx-stat {
+    color: #6b7280;
+    margin-top: 8px;
+    font-size: 13px;
+  }
+
+  #oltx-tip {
+    color: #9ca3af;
+    font-size: 12px;
+    margin-top: 6px;
+  }
+
+  /* 徽章 */
+  .oltx-badge {
+    display: inline-block;
+    background: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-left: 8px;
+    color: #6b7280;
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  /* 最小化状态 */
+  #oltx-panel.minimized #oltx-body {
+    display: none;
+  }
+
+  #oltx-panel.minimized {
+    width: 48px !important;
+    height: 48px !important;
+    border-radius: 24px !important;
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3) !important;
+    transition: all 0.3s ease !important;
+  }
+
+  #oltx-panel.minimized:hover {
+    transform: scale(1.1) !important;
+    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4) !important;
+  }
+
+  #oltx-panel.minimized #oltx-head {
+    height: 48px !important;
+    padding: 0 !important;
+    justify-content: center !important;
+    align-items: center !important;
+    border-radius: 24px !important;
+    border-bottom: none !important;
+    cursor: pointer !important;
+    background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%) !important;
+    position: relative !important;
+    overflow: hidden !important;
+  }
+
+  #oltx-panel.minimized #oltx-head::before {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: -100% !important;
+    width: 100% !important;
+    height: 100% !important;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent) !important;
+    transition: left 0.5s ease !important;
+  }
+
+  #oltx-panel.minimized:hover #oltx-head::before {
+    left: 100% !important;
+  }
+
+  #oltx-panel.minimized #oltx-title {
+    display: none !important;
+  }
+
+  #oltx-panel.minimized #oltx-minimize {
+    display: none !important;
+  }
+
+  #oltx-panel.minimized #oltx-hide {
+    display: none !important;
+  }
+
+  #oltx-panel.minimized::before {
+    content: "🌐" !important;
+    font-size: 20px !important;
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    pointer-events: none !important;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3)) !important;
+    transition: transform 0.3s ease !important;
+  }
+
+  #oltx-panel.minimized:hover::before {
+    transform: translate(-50%, -50%) scale(1.1) !important;
+  }
+
+  /* 复选框 */
+  .oltx-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 12px 0;
+    padding: 8px 12px;
+    background: #f9fafb;
+    border-radius: 6px;
+    border: 1px solid #e5e7eb;
+  }
+
+  .oltx-checkbox input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: #3b82f6;
+  }
+
+  .oltx-checkbox label {
+    cursor: pointer;
+    user-select: none;
+    font-weight: 500;
+    color: #374151;
+    font-size: 13px;
+  }
+
+  /* 按钮组 */
+  .oltx-actions-basic, .oltx-actions-advanced {
+    margin: 8px 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+    gap: 6px;
+  }
+
+  .oltx-actions-basic button, .oltx-actions-advanced button {
+    margin: 0;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    background: #ffffff;
+    color: #374151;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    width: 100%;
+    text-align: center;
+  }
+
+  .oltx-actions-basic button:hover, .oltx-actions-advanced button:hover {
+    background: #f9fafb;
+    border-color: #9ca3af;
+  }
+
+  .oltx-actions-basic button.primary {
+    background: #3b82f6;
+    color: #ffffff;
+    border-color: #3b82f6;
+  }
+
+  .oltx-actions-basic button.primary:hover {
+    background: #2563eb;
+    border-color: #2563eb;
+  }
+
+  .oltx-actions-basic button.secondary {
+    background: #6b7280;
+    color: #ffffff;
+    border-color: #6b7280;
+  }
+
+  .oltx-actions-basic button.secondary:hover {
+    background: #4b5563;
+    border-color: #4b5563;
+  }
+
+  .oltx-actions-basic button.success {
+    background: #10b981;
+    color: #ffffff;
+    border-color: #10b981;
+  }
+
+  .oltx-actions-basic button.success:hover {
+    background: #059669;
+    border-color: #059669;
+  }
+
+  .oltx-actions-basic button.warning {
+    background: #f59e0b;
+    color: #ffffff;
+    border-color: #f59e0b;
+  }
+
+  .oltx-actions-basic button.warning:hover {
+    background: #d97706;
+    border-color: #d97706;
+  }
+
+  .oltx-actions-basic button.danger {
+    background: #ef4444;
+    color: #ffffff;
+    border-color: #ef4444;
+  }
+
+  .oltx-actions-basic button.danger:hover {
+    background: #dc2626;
+    border-color: #dc2626;
+  }
+
+  /* 翻译状态标记 */
+  .oltx-span[data-state="translating"] {
+    padding: 2px 6px;
+    background: #f59e0b;
+    color: #ffffff;
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 12px;
+    animation: pulse 1.5s infinite;
+  }
+
+  .oltx-span[data-state="translated"] {
+    padding: 2px 6px;
+    background: #10b981;
+    color: #ffffff;
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 12px;
+  }
+
+  .oltx-span[data-state="error"] {
+    padding: 2px 6px;
+    background: #ef4444;
+    color: #ffffff;
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 12px;
+  }
+
+  @keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+  }
+
+  /* 滚动条 */
+  #oltx-body::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  #oltx-body::-webkit-scrollbar-track {
+    background: #f9fafb;
+    border-radius: 3px;
+  }
+
+  #oltx-body::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 3px;
+  }
+
+  #oltx-body::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+  }
+
+  /* 加载动画 */
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  .loading {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid #e5e7eb;
+    border-top: 2px solid #3b82f6;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  /* 确保面板内容不会影响整体大小 */
+  #oltx-panel * {
+    box-sizing: border-box;
+  }
+
+  .oltx-actions-basic, .oltx-actions-advanced {
+    width: 100%;
+  }
   `);
 
   // 工具函数定义（需要在模板字符串之前定义）
@@ -78,10 +491,10 @@
   panel.id = 'oltx-panel';
   panel.innerHTML = `
     <div id="oltx-head">
-      <div id="oltx-title">Ollama本地翻译器<span class="oltx-badge">流式</span></div>
-      <div>
-        <button id="oltx-minimize" style="background:#333;color:#fff;border:none;border-radius:8px;padding:4px 8px;cursor:pointer;margin-right:4px">−</button>
-        <button id="oltx-hide" style="background:#333;color:#fff;border:none;border-radius:8px;padding:4px 8px;cursor:pointer">✕</button>
+      <div id="oltx-title">🌐 Ollama本地翻译器<span class="oltx-badge">流式</span></div>
+      <div style="display: flex; gap: 8px;">
+        <button id="oltx-minimize">−</button>
+        <button id="oltx-hide">✕</button>
       </div>
     </div>
     <div id="oltx-body">
@@ -107,18 +520,18 @@
       <!-- 基本功能按钮 -->
       <div class="oltx-actions-basic">
         <button id="oltx-start" class="primary">开始整页翻译</button>
-        <button id="oltx-stop">停止</button>
+        <button id="oltx-stop" class="danger">停止</button>
         <button id="oltx-show-more" class="secondary">显示更多</button>
       </div>
 
       <!-- 高级功能按钮（默认隐藏） -->
       <div class="oltx-actions-advanced" style="display: none;">
-        <button id="oltx-refresh">重新扫描</button>
-        <button id="oltx-force-refresh">强制刷新</button>
-        <button id="oltx-save">保存设置</button>
-        <button id="oltx-debug">调试模式</button>
-        <button id="oltx-test">测试API</button>
-        <button id="oltx-quick-test">快速测试</button>
+        <button id="oltx-refresh" class="info">重新扫描</button>
+        <button id="oltx-force-refresh" class="warning">强制刷新</button>
+        <button id="oltx-save" class="success">保存设置</button>
+        <button id="oltx-debug" class="info">调试模式</button>
+        <button id="oltx-test" class="warning">测试API</button>
+        <button id="oltx-quick-test" class="info">快速测试</button>
         <button id="oltx-show-less" class="secondary">显示更少</button>
       </div>
 
@@ -127,23 +540,55 @@
       <div id="oltx-tip">说明：将逐段替换页面上的可见文本，翻译时会实时出现文字。</div>
     </div>
   `;
-  
+
   // 设置面板位置
   panel.style.left = CFG.panelLeft + 'px';
   panel.style.top = CFG.panelTop + 'px';
-  
+
   // 恢复最小化状态
   if (CFG.panelMinimized) {
     panel.classList.add('minimized');
   }
-  
+
+  // 紧急位置检查：如果面板位置超出屏幕，立即调整
+  setTimeout(() => {
+    const rect = panel.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const isMinimized = panel.classList.contains('minimized');
+    const panelWidth = isMinimized ? 40 : (panel.offsetWidth || 450);
+    const panelHeight = isMinimized ? 40 : (panel.offsetHeight || 400);
+
+    // 检查是否超出屏幕边界
+    if (rect.left + panelWidth > viewportWidth || rect.top + panelHeight > viewportHeight || rect.left < 0 || rect.top < 0) {
+      console.log('检测到面板位置超出屏幕，正在调整...');
+      console.log('当前位置:', { left: rect.left, top: rect.top, width: panelWidth, height: panelHeight });
+      console.log('视口尺寸:', { width: viewportWidth, height: viewportHeight });
+
+      // 重置到安全位置
+      const safeLeft = Math.max(10, Math.min(CFG.panelLeft, viewportWidth - panelWidth - 10));
+      const safeTop = Math.max(10, Math.min(CFG.panelTop, viewportHeight - panelHeight - 10));
+
+      panel.style.left = safeLeft + 'px';
+      panel.style.top = safeTop + 'px';
+
+      // 更新配置
+      CFG.panelLeft = safeLeft;
+      CFG.panelTop = safeTop;
+      GM_setValue('panelLeft', safeLeft);
+      GM_setValue('panelTop', safeTop);
+
+      console.log('面板位置已重置到安全位置:', { left: safeLeft, top: safeTop });
+    }
+  }, 100);
+
   document.documentElement.appendChild(panel);
-  
+
   // 调试信息
   console.log('面板已添加到页面');
   console.log('面板元素:', panel);
   console.log('面板可见性:', panel.offsetParent !== null);
-  
+
   // 强制确保面板可见
   panel.style.display = 'block';
   panel.style.visibility = 'visible';
@@ -155,7 +600,7 @@
     zIndex: panel.style.zIndex,
     position: panel.style.position
   });
-  
+
   // 在面板添加到DOM后设置按钮文本
   if (CFG.panelMinimized) {
     $('#oltx-minimize').textContent = '□';
@@ -163,18 +608,82 @@
 
   // 增强的拖拽功能，保存位置
   dragEnable($('#oltx-head'), panel);
-  
+
+  // 监听窗口大小变化，自动调整面板位置
+  window.addEventListener('resize', () => {
+    if (!panel.classList.contains('minimized')) {
+      adjustPanelPosition();
+    }
+  });
+
+  // 添加键盘快捷键：Ctrl+Shift+T 紧急恢复面板位置
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+      e.preventDefault();
+      console.log('触发紧急恢复面板位置快捷键');
+
+      // 重置到屏幕中央
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const isMinimized = panel.classList.contains('minimized');
+      const panelWidth = isMinimized ? 40 : 450;
+      const panelHeight = isMinimized ? 40 : 400;
+
+      const centerLeft = Math.max(10, (viewportWidth - panelWidth) / 2);
+      const centerTop = Math.max(10, (viewportHeight - panelHeight) / 2);
+
+      panel.style.left = centerLeft + 'px';
+      panel.style.top = centerTop + 'px';
+
+      // 更新配置
+      CFG.panelLeft = centerLeft;
+      CFG.panelTop = centerTop;
+      GM_setValue('panelLeft', centerLeft);
+      GM_setValue('panelTop', centerTop);
+
+      console.log('面板已紧急恢复到屏幕中央:', { left: centerLeft, top: centerTop });
+
+      // 显示提示
+      stat('面板已恢复到屏幕中央 (Ctrl+Shift+T)');
+      setTimeout(() => stat('待开始'), 2000);
+    }
+  });
+
   // 增强的最小化功能，保存状态
   $('#oltx-minimize').onclick = () => {
     panel.classList.toggle('minimized');
     const btn = $('#oltx-minimize');
     const isMinimized = panel.classList.contains('minimized');
     btn.textContent = isMinimized ? '□' : '−';
-    
+
     // 保存最小化状态
     CFG.panelMinimized = isMinimized;
     GM_setValue('panelMinimized', isMinimized);
+
+    // 如果从最小化状态恢复，检查并调整位置
+    if (!isMinimized) {
+      adjustPanelPosition();
+    }
   };
+
+  // 点击最小化面板恢复功能
+  $('#oltx-head').addEventListener('click', (e) => {
+    // 如果面板已最小化且点击的不是按钮，则恢复面板
+    if (panel.classList.contains('minimized') &&
+        !e.target.id.includes('minimize') &&
+        !e.target.id.includes('hide')) {
+      panel.classList.remove('minimized');
+      const btn = $('#oltx-minimize');
+      btn.textContent = '−';
+
+      // 保存最小化状态
+      CFG.panelMinimized = false;
+      GM_setValue('panelMinimized', false);
+
+      // 调整位置
+      adjustPanelPosition();
+    }
+  });
   $('#oltx-hide').onclick = () => panel.remove();
   $('#oltx-save').onclick = saveCfg;
   $('#oltx-start').onclick = startTranslate;
@@ -184,7 +693,7 @@
   $('#oltx-debug').onclick = toggleDebug;
   $('#oltx-test').onclick = testAPI;
   $('#oltx-quick-test').onclick = quickTest;
-  
+
   // 自动翻译复选框事件处理
   $('#oltx-auto').onchange = () => {
     CFG.autoTranslate = $('#oltx-auto').checked;
@@ -200,7 +709,7 @@
     $('.oltx-actions-basic').style.display = 'none';
     $('.oltx-actions-advanced').style.display = 'block';
   };
-  
+
   $('#oltx-show-less').onclick = () => {
     $('.oltx-config-basic').style.display = 'block';
     $('.oltx-config-advanced').style.display = 'none';
@@ -211,7 +720,7 @@
   // 添加强制重新加载脚本按钮
   const reloadBtn = document.createElement('button');
   reloadBtn.textContent = '重新加载脚本';
-  reloadBtn.style.cssText = 'margin: 2px; padding: 6px 12px; border-radius: 6px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 12px';
+  reloadBtn.style.cssText = 'margin: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 12px; width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis';
   reloadBtn.onclick = () => {
     console.log('重新加载脚本...');
     location.reload();
@@ -221,7 +730,7 @@
   // 添加一个简单的测试按钮
   const simpleTestBtn = document.createElement('button');
   simpleTestBtn.textContent = '简单测试';
-  simpleTestBtn.style.cssText = 'margin: 2px; padding: 6px 12px; border-radius: 6px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 12px';
+  simpleTestBtn.style.cssText = 'margin: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 12px; width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis';
   simpleTestBtn.onclick = () => {
     console.log('开始简单测试...');
     console.log('当前配置:', CFG);
@@ -988,21 +1497,40 @@
   // ----------- 工具 -----------
   function dragEnable(handle, box){
     let sx=0, sy=0, ox=0, oy=0, dragging=false;
-    handle.addEventListener('mousedown', (e)=>{ 
-      dragging=true; 
-      sx=e.clientX; 
-      sy=e.clientY; 
-      const r=box.getBoundingClientRect(); 
-      ox=r.left; 
-      oy=r.top; 
-      e.preventDefault(); 
+    handle.addEventListener('mousedown', (e)=>{
+      dragging=true;
+      sx=e.clientX;
+      sy=e.clientY;
+      const r=box.getBoundingClientRect();
+      ox=r.left;
+      oy=r.top;
+      e.preventDefault();
     });
-    window.addEventListener('mousemove', (e)=>{ 
-      if(!dragging) return; 
-      box.style.left=(ox+e.clientX-sx)+'px'; 
-      box.style.top=(oy+e.clientY-sy)+'px'; 
+    window.addEventListener('mousemove', (e)=>{
+      if(!dragging) return;
+
+      // 计算新位置
+      let newLeft = ox + e.clientX - sx;
+      let newTop = oy + e.clientY - sy;
+
+      // 获取视口尺寸
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      // 获取面板尺寸（最小化时为40px）
+      const isMinimized = box.classList.contains('minimized');
+      const panelWidth = isMinimized ? 40 : (box.offsetWidth || 450);
+      const panelHeight = isMinimized ? 40 : (box.offsetHeight || 400);
+
+      // 边界检测
+      newLeft = Math.max(0, Math.min(newLeft, viewportWidth - panelWidth));
+      newTop = Math.max(0, Math.min(newTop, viewportHeight - panelHeight));
+
+      // 应用新位置
+      box.style.left = newLeft + 'px';
+      box.style.top = newTop + 'px';
     });
-    window.addEventListener('mouseup', ()=> { 
+    window.addEventListener('mouseup', ()=> {
       if(dragging) {
         dragging=false;
         // 保存面板位置
@@ -1011,8 +1539,78 @@
         CFG.panelTop = Math.round(rect.top);
         GM_setValue('panelLeft', CFG.panelLeft);
         GM_setValue('panelTop', CFG.panelTop);
+
+        console.log('面板位置已保存:', {
+          left: CFG.panelLeft,
+          top: CFG.panelTop,
+          isMinimized: box.classList.contains('minimized')
+        });
       }
     });
+  }
+
+  // 调整面板位置，确保不超出屏幕边界
+  function adjustPanelPosition() {
+    const rect = panel.getBoundingClientRect();
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    // 动态获取面板的实际尺寸（考虑最小化状态）
+    const isMinimized = panel.classList.contains('minimized');
+    const panelWidth = isMinimized ? 40 : (panel.offsetWidth || 450);
+    const panelHeight = isMinimized ? 40 : (panel.offsetHeight || 400);
+
+    let newLeft = CFG.panelLeft;
+    let newTop = CFG.panelTop;
+    let positionChanged = false;
+
+    // 检查右边界
+    if (newLeft + panelWidth > viewportWidth) {
+      newLeft = Math.max(10, viewportWidth - panelWidth - 10);
+      positionChanged = true;
+    }
+
+    // 检查下边界
+    if (newTop + panelHeight > viewportHeight) {
+      newTop = Math.max(10, viewportHeight - panelHeight - 10);
+      positionChanged = true;
+    }
+
+    // 检查左边界
+    if (newLeft < 10) {
+      newLeft = 10;
+      positionChanged = true;
+    }
+
+    // 检查上边界
+    if (newTop < 10) {
+      newTop = 10;
+      positionChanged = true;
+    }
+
+    // 如果位置需要调整，应用新位置
+    if (positionChanged) {
+      panel.style.left = newLeft + 'px';
+      panel.style.top = newTop + 'px';
+
+      // 更新配置
+      CFG.panelLeft = newLeft;
+      CFG.panelTop = newTop;
+      GM_setValue('panelLeft', newLeft);
+      GM_setValue('panelTop', newTop);
+
+      console.log('面板位置已调整:', {
+        oldLeft: rect.left,
+        oldTop: rect.top,
+        newLeft,
+        newTop,
+        viewportWidth,
+        viewportHeight,
+        panelWidth,
+        panelHeight,
+        isMinimized
+      });
+    }
   }
 
   // ----------- 自动翻译逻辑 -----------
