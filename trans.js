@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ollama本地流式翻译器
 // @namespace    https://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  通过本地 Ollama 对网页进行就地翻译。
 // @author       hex0x13h
 // @match        *://*/*
@@ -414,12 +414,8 @@
   }
 
   .oltx-span[data-state="translated"] {
-    padding: 2px 6px;
-    background: #10b981;
-    color: #ffffff;
-    border-radius: 4px;
-    font-weight: 500;
-    font-size: 12px;
+    color: inherit !important;
+    font-size: inherit !important;
   }
 
   .oltx-span[data-state="error"] {
